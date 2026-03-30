@@ -1,0 +1,13 @@
+{
+  "model_device": "cpu",
+  "reranker_device": "cpu",
+  "batch_size_cpu": 16,
+  "batch_size_gpu": 64,
+  "cloud_timeout_sec": 90,
+  "cloud_max_file_mb": 1024,
+  "search_mode": "lite",
+  "llm_device": "cpu",
+  "llm_model_id": "Qwen/Qwen2.5-0.5B-Instruct",
+  "llm_max_new_tokens": 220,
+  "llm_temperature": 0.1
+}

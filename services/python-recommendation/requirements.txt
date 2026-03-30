@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+requests
+numpy
+scikit-learn
+beautifulsoup4
+lxml
+chardet
+PyPDF2
+ebooklib
+psycopg[binary]
+sentence-transformers
+safetensors

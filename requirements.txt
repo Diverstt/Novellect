@@ -1,0 +1,17 @@
+streamlit
+pandas
+beautifulsoup4
+lxml
+chardet
+PyPDF2
+ebooklib
+sentence-transformers
+transformers
+accelerate
+safetensors
+scikit-learn
+numpy
+requests
+google-cloud-storage
+
+peft

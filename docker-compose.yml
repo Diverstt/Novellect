@@ -1,0 +1,317 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-novellect}
+      POSTGRES_USER: ${POSTGRES_USER:-novellect}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-novellect}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-novellect} -d ${POSTGRES_DB:-novellect}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  pgadmin:
+    image: dpage/pgadmin4:9.8
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@novellect.app}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin123}
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  qdrant:
+    image: qdrant/qdrant:v1.9.5
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  local-llm:
+    image: ollama/ollama:0.11.4
+    profiles: ["llm"]
+    gpus: all
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    expose:
+      - "11434"
+    volumes:
+      - local_llm_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  local-llm-init:
+    image: ollama/ollama:0.11.4
+    profiles: ["llm"]
+    depends_on:
+      local-llm:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://local-llm:11434
+      NOVELLECT_LLM_MODEL_ID: ${NOVELLECT_LLM_MODEL_ID:-qwen2.5:14b-instruct}
+    entrypoint:
+      - /bin/sh
+      - -lc
+      - until ollama list >/dev/null 2>&1; do sleep 2; done; ollama pull "${NOVELLECT_LLM_MODEL_ID}"
+    restart: "no"
+
+  python-recommendation:
+    build:
+      context: ./services/python-recommendation
+    init: true
+    gpus: all
+    command:
+      - /bin/sh
+      - -lc
+      - python wait_for_qdrant.py && python -m uvicorn main:app --host 0.0.0.0 --port 8000
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NOVELLECT_DATA_DIR: /app/data
+      NOVELLECT_STORAGE_FILE: /app/data/storage.json
+      NOVELLECT_VECTOR_DB_FILE: /app/data/vector_db.npz
+      NOVELLECT_VECTOR_MANIFEST_FILE: /app/data/vector_manifest.json
+      NOVELLECT_VECTOR_SEGMENTS_DIR: /app/data/vector_segments
+      NOVELLECT_CHUNK_DB_FILE: /app/data/chunk_store.sqlite
+      PYTHONPATH: ${NOVELLECT_PYTHONPATH:-/app/_vendor}
+      NOVELLECT_SEARCH_CACHE_FILE: /app/data/search_cache.pkl
+      NOVELLECT_TXT_CACHE_DIR: /app/data/txt_cache
+      NOVELLECT_UPLOADS_DIR: /app/uploads
+      NOVELLECT_PROFILES_FILE: /app/data/user_profiles.json
+      NOVELLECT_INTERACTIONS_FILE: /app/data/interaction_events.json
+      NOVELLECT_SESSIONS_FILE: /app/data/session_state.json
+      NOVELLECT_PROFILE_STORE_BACKEND: ${NOVELLECT_PROFILE_STORE_BACKEND:-postgres}
+      NOVELLECT_LOG_LEVEL: ${NOVELLECT_LOG_LEVEL:-INFO}
+      NOVELLECT_QDRANT_URL: ${NOVELLECT_QDRANT_URL:-http://qdrant:6333}
+      NOVELLECT_QDRANT_TIMEOUT_SEC: ${NOVELLECT_QDRANT_TIMEOUT_SEC:-5}
+      NOVELLECT_QDRANT_BOOK_COLLECTION: ${NOVELLECT_QDRANT_BOOK_COLLECTION:-book_semantic_vectors}
+      NOVELLECT_QDRANT_USER_COLLECTION: ${NOVELLECT_QDRANT_USER_COLLECTION:-user_taste_vectors}
+      NOVELLECT_BASE_EMBEDDING_MODEL: ${NOVELLECT_BASE_EMBEDDING_MODEL:-paraphrase-multilingual-MiniLM-L12-v2}
+      NOVELLECT_BASE_EMBEDDING_MODEL_PATH: ${NOVELLECT_BASE_EMBEDDING_MODEL_PATH:-/app/models/paraphrase-multilingual-MiniLM-L12-v2}
+      HF_HOME: ${NOVELLECT_HF_HOME:-/app/data/hf_home}
+      SENTENCE_TRANSFORMERS_HOME: ${NOVELLECT_HF_HOME:-/app/data/hf_home}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
+      LD_LIBRARY_PATH: ${NOVELLECT_LD_LIBRARY_PATH:-/app/_vendor/nvidia/cublas/lib:/app/_vendor/nvidia/cuda_cupti/lib:/app/_vendor/nvidia/cuda_nvrtc/lib:/app/_vendor/nvidia/cuda_runtime/lib:/app/_vendor/nvidia/cudnn/lib:/app/_vendor/nvidia/cufft/lib:/app/_vendor/nvidia/curand/lib:/app/_vendor/nvidia/cusolver/lib:/app/_vendor/nvidia/cusparse/lib:/app/_vendor/nvidia/nccl/lib:/app/_vendor/nvidia/nvjitlink/lib:/app/_vendor/nvidia/nvtx/lib}
+      NOVELLECT_CACHE_TTL_SEC: ${NOVELLECT_CACHE_TTL_SEC:-300}
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-novellect}
+      POSTGRES_USER: ${POSTGRES_USER:-novellect}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-novellect}
+      POSTGRES_TIMEOUT_SEC: ${POSTGRES_TIMEOUT_SEC:-5}
+      NOVELLECT_SEARCH_MODE: ${NOVELLECT_SEARCH_MODE:-lite}
+      NOVELLECT_USE_STUB_LLM: ${NOVELLECT_USE_STUB_LLM:-1}
+      NOVELLECT_LLM_MODEL_ID: ${NOVELLECT_LLM_MODEL_ID:-qwen2.5:14b-instruct}
+      NOVELLECT_ENABLE_RERANKER: ${NOVELLECT_ENABLE_RERANKER:-1}
+      NOVELLECT_LLM_SERVICE_URL: ${NOVELLECT_LLM_SERVICE_URL:-http://local-llm:11434}
+      NOVELLECT_LLM_SERVICE_MODE: ${NOVELLECT_LLM_SERVICE_MODE:-ollama}
+      NOVELLECT_LLM_SERVICE_API_KEY: ${NOVELLECT_LLM_SERVICE_API_KEY:-}
+      NOVELLECT_LLM_TIMEOUT_SEC: ${NOVELLECT_LLM_TIMEOUT_SEC:-8}
+      NOVELLECT_LLM_RETRIES: ${NOVELLECT_LLM_RETRIES:-1}
+      DATASET_ROOT: ${DATASET_ROOT:-/dataset}
+      DATASET_INBOX_DIR: ${DATASET_INBOX_DIR:-/dataset/inbox}
+      DATASET_PROCESSED_DIR: ${DATASET_PROCESSED_DIR:-/dataset/processed}
+      DATASET_FAILED_DIR: ${DATASET_FAILED_DIR:-/dataset/failed}
+      DATASET_MANIFESTS_DIR: ${DATASET_MANIFESTS_DIR:-/dataset/manifests}
+      INGESTION_ENABLED: ${API_INGESTION_ENABLED:-0}
+      INGESTION_SCAN_ON_START: ${INGESTION_SCAN_ON_START:-1}
+      INGESTION_WATCH_MODE: ${INGESTION_WATCH_MODE:-1}
+      INGESTION_POLL_INTERVAL_SEC: ${INGESTION_POLL_INTERVAL_SEC:-30}
+      INGESTION_STATE_DB_PATH: ${INGESTION_STATE_DB_PATH:-/app/data/ingestion_state.sqlite}
+      INGESTION_PROGRESS_LOG_PATH: ${INGESTION_PROGRESS_LOG_PATH:-/app/data/ingestion_progress.jsonl}
+      INGESTION_EMBEDDING_BATCH_SIZE: ${INGESTION_EMBEDDING_BATCH_SIZE:-32}
+      INGESTION_MAX_RETRIES: ${INGESTION_MAX_RETRIES:-3}
+      INGESTION_WORKER_CONCURRENCY: ${INGESTION_WORKER_CONCURRENCY:-1}
+      INGESTION_PAUSE_ON_FOREGROUND: ${INGESTION_PAUSE_ON_FOREGROUND:-1}
+      ONLINE_SEARCH_MAX_SPECS: ${ONLINE_SEARCH_MAX_SPECS:-2}
+      ONLINE_SEARCH_CANDIDATE_FACTOR: ${ONLINE_SEARCH_CANDIDATE_FACTOR:-3}
+      ONLINE_SEARCH_MIN_CANDIDATES: ${ONLINE_SEARCH_MIN_CANDIDATES:-12}
+      ONLINE_SEARCH_QDRANT_ENABLED: ${ONLINE_SEARCH_QDRANT_ENABLED:-1}
+      ONLINE_SEARCH_QDRANT_LIMIT_FACTOR: ${ONLINE_SEARCH_QDRANT_LIMIT_FACTOR:-3}
+      ONLINE_SEARCH_WARM_SYNC: ${ONLINE_SEARCH_WARM_SYNC:-0}
+      NOVELLECT_SEARCH_LOG_TIMINGS: ${NOVELLECT_SEARCH_LOG_TIMINGS:-1}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./services/python-recommendation:/app
+      - python_service_data:/app/data
+      - python_service_uploads:/app/uploads
+      - ./dataset:/dataset
+    depends_on:
+      qdrant:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  python-ingestion-worker:
+    build:
+      context: ./services/python-recommendation
+    init: true
+    gpus: all
+    command:
+      - /bin/sh
+      - -lc
+      - python wait_for_qdrant.py && python worker.py ingest-loop ${INGESTION_POLL_INTERVAL_SEC:-30}
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NOVELLECT_DATA_DIR: /app/data
+      NOVELLECT_STORAGE_FILE: /app/data/storage.json
+      NOVELLECT_VECTOR_DB_FILE: /app/data/vector_db.npz
+      NOVELLECT_VECTOR_MANIFEST_FILE: /app/data/vector_manifest.json
+      NOVELLECT_VECTOR_SEGMENTS_DIR: /app/data/vector_segments
+      NOVELLECT_CHUNK_DB_FILE: /app/data/chunk_store.sqlite
+      PYTHONPATH: ${NOVELLECT_PYTHONPATH:-/app/_vendor}
+      NOVELLECT_SEARCH_CACHE_FILE: /app/data/search_cache.pkl
+      NOVELLECT_TXT_CACHE_DIR: /app/data/txt_cache
+      NOVELLECT_UPLOADS_DIR: /app/uploads
+      NOVELLECT_PROFILES_FILE: /app/data/user_profiles.json
+      NOVELLECT_INTERACTIONS_FILE: /app/data/interaction_events.json
+      NOVELLECT_SESSIONS_FILE: /app/data/session_state.json
+      NOVELLECT_PROFILE_STORE_BACKEND: ${NOVELLECT_PROFILE_STORE_BACKEND:-postgres}
+      NOVELLECT_LOG_LEVEL: ${NOVELLECT_LOG_LEVEL:-INFO}
+      NOVELLECT_QDRANT_URL: ${NOVELLECT_QDRANT_URL:-http://qdrant:6333}
+      NOVELLECT_QDRANT_TIMEOUT_SEC: ${NOVELLECT_QDRANT_TIMEOUT_SEC:-5}
+      NOVELLECT_QDRANT_BOOK_COLLECTION: ${NOVELLECT_QDRANT_BOOK_COLLECTION:-book_semantic_vectors}
+      NOVELLECT_QDRANT_USER_COLLECTION: ${NOVELLECT_QDRANT_USER_COLLECTION:-user_taste_vectors}
+      NOVELLECT_BASE_EMBEDDING_MODEL: ${NOVELLECT_BASE_EMBEDDING_MODEL:-paraphrase-multilingual-MiniLM-L12-v2}
+      NOVELLECT_BASE_EMBEDDING_MODEL_PATH: ${NOVELLECT_BASE_EMBEDDING_MODEL_PATH:-/app/models/paraphrase-multilingual-MiniLM-L12-v2}
+      HF_HOME: ${NOVELLECT_HF_HOME:-/app/data/hf_home}
+      SENTENCE_TRANSFORMERS_HOME: ${NOVELLECT_HF_HOME:-/app/data/hf_home}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
+      LD_LIBRARY_PATH: ${NOVELLECT_LD_LIBRARY_PATH:-/app/_vendor/nvidia/cublas/lib:/app/_vendor/nvidia/cuda_cupti/lib:/app/_vendor/nvidia/cuda_nvrtc/lib:/app/_vendor/nvidia/cuda_runtime/lib:/app/_vendor/nvidia/cudnn/lib:/app/_vendor/nvidia/cufft/lib:/app/_vendor/nvidia/curand/lib:/app/_vendor/nvidia/cusolver/lib:/app/_vendor/nvidia/cusparse/lib:/app/_vendor/nvidia/nccl/lib:/app/_vendor/nvidia/nvjitlink/lib:/app/_vendor/nvidia/nvtx/lib}
+      NOVELLECT_CACHE_TTL_SEC: ${NOVELLECT_CACHE_TTL_SEC:-300}
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-novellect}
+      POSTGRES_USER: ${POSTGRES_USER:-novellect}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-novellect}
+      POSTGRES_TIMEOUT_SEC: ${POSTGRES_TIMEOUT_SEC:-5}
+      NOVELLECT_SEARCH_MODE: ${NOVELLECT_SEARCH_MODE:-lite}
+      NOVELLECT_USE_STUB_LLM: ${NOVELLECT_USE_STUB_LLM:-1}
+      NOVELLECT_LLM_MODEL_ID: ${NOVELLECT_LLM_MODEL_ID:-qwen2.5:14b-instruct}
+      NOVELLECT_ENABLE_RERANKER: ${NOVELLECT_ENABLE_RERANKER:-1}
+      NOVELLECT_LLM_SERVICE_URL: ${NOVELLECT_LLM_SERVICE_URL:-http://local-llm:11434}
+      NOVELLECT_LLM_SERVICE_MODE: ${NOVELLECT_LLM_SERVICE_MODE:-ollama}
+      NOVELLECT_LLM_SERVICE_API_KEY: ${NOVELLECT_LLM_SERVICE_API_KEY:-}
+      NOVELLECT_LLM_TIMEOUT_SEC: ${NOVELLECT_LLM_TIMEOUT_SEC:-8}
+      NOVELLECT_LLM_RETRIES: ${NOVELLECT_LLM_RETRIES:-1}
+      DATASET_ROOT: ${DATASET_ROOT:-/dataset}
+      DATASET_INBOX_DIR: ${DATASET_INBOX_DIR:-/dataset/inbox}
+      DATASET_PROCESSED_DIR: ${DATASET_PROCESSED_DIR:-/dataset/processed}
+      DATASET_FAILED_DIR: ${DATASET_FAILED_DIR:-/dataset/failed}
+      DATASET_MANIFESTS_DIR: ${DATASET_MANIFESTS_DIR:-/dataset/manifests}
+      INGESTION_ENABLED: ${INGESTION_ENABLED:-1}
+      INGESTION_SCAN_ON_START: ${INGESTION_SCAN_ON_START:-1}
+      INGESTION_WATCH_MODE: ${INGESTION_WATCH_MODE:-1}
+      INGESTION_POLL_INTERVAL_SEC: ${INGESTION_POLL_INTERVAL_SEC:-30}
+      INGESTION_STATE_DB_PATH: ${INGESTION_STATE_DB_PATH:-/app/data/ingestion_state.sqlite}
+      INGESTION_PROGRESS_LOG_PATH: ${INGESTION_PROGRESS_LOG_PATH:-/app/data/ingestion_progress.jsonl}
+      INGESTION_EMBEDDING_BATCH_SIZE: ${INGESTION_EMBEDDING_BATCH_SIZE:-32}
+      INGESTION_MAX_RETRIES: ${INGESTION_MAX_RETRIES:-3}
+      INGESTION_WORKER_CONCURRENCY: ${INGESTION_WORKER_CONCURRENCY:-1}
+      INGESTION_PAUSE_ON_FOREGROUND: ${INGESTION_PAUSE_ON_FOREGROUND:-1}
+      ONLINE_SEARCH_WARM_SYNC: ${WORKER_SEARCH_WARM_SYNC:-0}
+      NOVELLECT_SEARCH_LOG_TIMINGS: ${NOVELLECT_SEARCH_LOG_TIMINGS:-1}
+    volumes:
+      - ./services/python-recommendation:/app
+      - python_service_data:/app/data
+      - python_service_uploads:/app/uploads
+      - ./dataset:/dataset
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+
+  go-backend:
+    build:
+      context: ./services/go-backend
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      GO_BACKEND_HTTP_ADDR: ${GO_BACKEND_HTTP_ADDR:-:8080}
+      GO_BACKEND_JWT_SECRET: ${GO_BACKEND_JWT_SECRET:-change-me-for-local-dev}
+      GO_BACKEND_ACCESS_TTL_SEC: ${GO_BACKEND_ACCESS_TTL_SEC:-900}
+      GO_BACKEND_REFRESH_TTL_SEC: ${GO_BACKEND_REFRESH_TTL_SEC:-1209600}
+      PYTHON_RECOMMENDATION_URL: ${PYTHON_RECOMMENDATION_URL:-http://python-recommendation:8000}
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-novellect}
+      POSTGRES_USER: ${POSTGRES_USER:-novellect}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-novellect}
+      POSTGRES_TIMEOUT_SEC: ${POSTGRES_TIMEOUT_SEC:-5}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_TIMEOUT_SEC: ${REDIS_TIMEOUT_SEC:-3}
+      REDIS_CACHE_TTL_SEC: ${REDIS_CACHE_TTL_SEC:-300}
+      REDIS_STATE_TTL_SEC: ${REDIS_STATE_TTL_SEC:-7200}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      python-recommendation:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  web-frontend:
+    build:
+      context: ./services/web-frontend
+    environment:
+      INTERNAL_API_BASE_URL: ${INTERNAL_API_BASE_URL:-http://go-backend:8080}
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      go-backend:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  pgadmin_data:
+  qdrant_data:
+  python_service_data:
+  python_service_uploads:
+  local_llm_data:

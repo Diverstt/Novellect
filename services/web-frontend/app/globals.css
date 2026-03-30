@@ -1,0 +1,57 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-sans: "Manrope", "Avenir Next", "Segoe UI", sans-serif;
+  --font-serif: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  --background: 36 33% 96%;
+  --foreground: 24 24% 18%;
+  --card: 36 33% 98%;
+  --card-foreground: 24 24% 18%;
+  --primary: 19 33% 28%;
+  --primary-foreground: 36 33% 97%;
+  --secondary: 34 27% 90%;
+  --secondary-foreground: 24 22% 23%;
+  --muted: 36 20% 92%;
+  --muted-foreground: 24 12% 40%;
+  --accent: 22 28% 88%;
+  --accent-foreground: 24 22% 22%;
+  --border: 30 20% 82%;
+  --input: 30 20% 82%;
+  --ring: 19 33% 28%;
+  --destructive: 3 65% 48%;
+  --destructive-foreground: 0 0% 100%;
+}
+
+* {
+  @apply border-border;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  @apply bg-background text-foreground antialiased;
+  background-image:
+    radial-gradient(circle at top, rgba(161, 131, 107, 0.11), transparent 42%),
+    linear-gradient(180deg, rgba(255, 252, 247, 0.8), rgba(244, 238, 229, 0.95));
+  min-height: 100vh;
+}
+
+a {
+  @apply transition-colors;
+}
+
+::selection {
+  background: rgba(116, 83, 57, 0.18);
+}
+
+.page-frame {
+  @apply mx-auto w-full max-w-6xl px-4 sm:px-6;
+}
+
+.editorial-copy {
+  @apply text-sm leading-7 text-muted-foreground sm:text-base;
+}
